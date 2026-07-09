@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>包飯店庫存管理</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   :root {
     --surface-1: #fcfcfb;
@@ -49,11 +50,28 @@
   }
   header.app-header {
     padding: 16px 16px 8px;
-    display: flex; align-items: baseline; justify-content: space-between;
+    display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
   }
-  header.app-header h1 { font-size: 20px; font-weight: 700; }
+  header.app-header h1 { font-size: 20px; font-weight: 700; flex: 1; }
   header.app-header .date { font-size: 13px; color: var(--text-muted); }
+  header.app-header .logout {
+    border: none; background: none; color: var(--text-muted);
+    font-size: 13px; cursor: pointer; padding: 4px;
+  }
   main { padding: 0 12px; max-width: 720px; margin: 0 auto; }
+
+  /* ---- 登入畫面 ---- */
+  #loginView {
+    min-height: 85vh; display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  #loginView .login-card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 16px; padding: 28px 22px; width: min(92vw, 380px);
+  }
+  #loginView h1 { font-size: 22px; text-align: center; margin-bottom: 4px; }
+  #loginView .sub { font-size: 13px; color: var(--text-muted); text-align: center; margin-bottom: 22px; }
+  #loginErr { color: var(--critical); font-size: 13px; margin: 10px 0; text-align: center; min-height: 18px; }
 
   /* ---- 底部導覽 ---- */
   nav.tabbar {
@@ -134,7 +152,7 @@
   }
   .chips button.sel { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface-1)); }
 
-  select, input[type="text"], input[type="number"] {
+  select, input[type="text"], input[type="number"], input[type="email"], input[type="password"] {
     width: 100%; padding: 13px 12px; font-size: 16px;
     border: 1px solid var(--border); border-radius: 10px;
     background: var(--surface-1); color: var(--text-primary);
@@ -152,6 +170,7 @@
     width: 100%; padding: 16px 0; font-size: 17px; font-weight: 700;
     background: var(--accent); color: #fff; border: none; border-radius: 12px; cursor: pointer;
   }
+  .btn-primary:disabled { opacity: .55; }
   .btn-ghost {
     width: 100%; padding: 12px 0; font-size: 14px;
     background: none; color: var(--accent); border: 1px dashed var(--accent);
@@ -188,6 +207,7 @@
   .txn .del { border: none; background: none; color: var(--text-muted); font-size: 16px; cursor: pointer; padding: 6px; }
 
   .empty { text-align: center; color: var(--text-muted); font-size: 14px; padding: 28px 0; }
+  .sync-note { text-align: center; color: var(--text-muted); font-size: 12px; padding: 6px 0 14px; }
 
   /* ---- Toast ---- */
   #toast {
@@ -207,13 +227,41 @@
   }
   dialog::backdrop { background: rgba(0,0,0,.4); }
   dialog h3 { font-size: 16px; margin-bottom: 14px; }
+
+  #loading {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: color-mix(in srgb, var(--page) 65%, transparent); z-index: 40;
+    font-size: 15px; color: var(--text-secondary); font-weight: 600;
+  }
+  #loading.show { display: flex; }
 </style>
 </head>
 <body>
 
+<!-- ============ 登入 ============ -->
+<section id="loginView" style="display:none">
+  <div class="login-card">
+    <h1>🦆 包飯店庫存管理</h1>
+    <div class="sub">請用公司配發的帳號登入</div>
+    <div class="field">
+      <label>Email</label>
+      <input type="email" id="loginEmail" autocomplete="username" placeholder="you@example.com">
+    </div>
+    <div class="field">
+      <label>密碼</label>
+      <input type="password" id="loginPw" autocomplete="current-password" placeholder="••••••••">
+    </div>
+    <div id="loginErr"></div>
+    <button class="btn-primary" id="loginBtn" onclick="doLogin()">登入</button>
+  </div>
+</section>
+
+<!-- ============ App 本體 ============ -->
+<div id="appView" style="display:none">
 <header class="app-header">
   <h1 id="pageTitle">總覽</h1>
   <span class="date" id="todayLabel"></span>
+  <button class="logout" onclick="doLogout()">登出</button>
 </header>
 
 <main>
@@ -235,14 +283,7 @@
       <div id="barChart"></div>
       <div class="legend" id="barLegend"></div>
     </div>
-
-    <div class="card" id="demoCard" style="display:none">
-      <h2>還沒有資料</h2>
-      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:10px">
-        可以先載入範例資料試試操作手感，之後一鍵清除即可。
-      </p>
-      <button class="btn-ghost" onclick="loadDemo()">載入範例資料</button>
-    </div>
+    <div class="sync-note">☁️ 資料即時同步自雲端資料庫</div>
   </section>
 
   <!-- ============ 輸入 ============ -->
@@ -279,7 +320,7 @@
         <input type="text" id="noteInput" placeholder="例如：早上生產批次">
       </div>
 
-      <button class="btn-primary" onclick="saveTxn()">儲存</button>
+      <button class="btn-primary" id="saveBtn" onclick="saveTxn()">儲存</button>
     </div>
   </section>
 
@@ -305,7 +346,6 @@
       <div id="txnList"></div>
       <div class="empty" id="logEmpty" style="display:none">尚無異動紀錄</div>
     </div>
-    <button class="btn-ghost" style="border-color:var(--critical);color:var(--critical)" onclick="clearAll()">清除全部資料</button>
   </section>
 </main>
 
@@ -315,8 +355,10 @@
   <button data-view="stock"><span class="ico">📦</span>庫存</button>
   <button data-view="log"><span class="ico">🕐</span>紀錄</button>
 </nav>
+</div>
 
 <div id="toast"></div>
+<div id="loading">☁️ 同步中…</div>
 
 <dialog id="newProductDlg">
   <h3>新增商品</h3>
@@ -336,22 +378,39 @@
 
 <script>
 /* =====================================================
-   資料層 — 目前使用 localStorage（單機示範）
-   之後接 Supabase 時只需改寫 store 這個物件
+   雲端資料層 — Supabase
    ===================================================== */
+const SUPABASE_URL = 'https://dtlwettqrimzkdlapuam.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_inNHkvtSYN_rZQxn6vLRjw_ZhC9DOc3'; // 公開訪客鑰匙，安全性由登入與RLS把關
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
 const WAREHOUSES = ['2F庫', '楠梓庫', '中正路庫'];
 const WH_COLORS = ['var(--wh-1)', 'var(--wh-2)', 'var(--wh-3)'];
 
-const store = {
-  KEY: 'inv_data_v1',
-  data: { products: [], txns: [] },
-  load() {
-    try { this.data = JSON.parse(localStorage.getItem(this.KEY)) || { products: [], txns: [] }; }
-    catch { this.data = { products: [], txns: [] }; }
-  },
-  save() { localStorage.setItem(this.KEY, JSON.stringify(this.data)); },
-};
-store.load();
+const store = { data: { products: [], txns: [] } };
+
+function showLoading(on) { document.getElementById('loading').classList.toggle('show', on); }
+
+async function fetchAll() {
+  showLoading(true);
+  try {
+    const [pRes, tRes] = await Promise.all([
+      sb.from('products').select('*').order('created_at'),
+      sb.from('txns').select('*').order('ts', { ascending: false }).limit(2000),
+    ]);
+    if (pRes.error) throw pRes.error;
+    if (tRes.error) throw tRes.error;
+    store.data.products = pRes.data.map(r => ({ id: r.id, name: r.name, unit: r.unit }));
+    store.data.txns = tRes.data.map(mapTxn);
+  } catch (e) {
+    toast('連線失敗：' + (e.message || '請檢查網路'));
+  } finally {
+    showLoading(false);
+  }
+}
+function mapTxn(r) {
+  return { id: r.id, ts: Date.parse(r.ts), type: r.type, productId: r.product_id, wh: r.wh, qty: r.qty, note: r.note || '' };
+}
 
 /* ---------- 庫存計算：由異動紀錄累加 ---------- */
 function stockOf(productId, wh) {
@@ -369,6 +428,55 @@ function stockMatrix() {
     const perWh = WAREHOUSES.map(w => stockOf(p.id, w));
     return { p, perWh, total: perWh.reduce((a, b) => a + b, 0) };
   });
+}
+
+/* =====================================================
+   登入 / 登出
+   ===================================================== */
+async function doLogin() {
+  const email = document.getElementById('loginEmail').value.trim();
+  const pw = document.getElementById('loginPw').value;
+  const err = document.getElementById('loginErr');
+  const btn = document.getElementById('loginBtn');
+  err.textContent = '';
+  if (!email || !pw) { err.textContent = '請輸入 Email 和密碼'; return; }
+  btn.disabled = true; btn.textContent = '登入中…';
+  const { error } = await sb.auth.signInWithPassword({ email, password: pw });
+  btn.disabled = false; btn.textContent = '登入';
+  if (error) {
+    err.textContent = error.message.includes('Invalid login credentials')
+      ? '帳號或密碼錯誤' : '登入失敗：' + error.message;
+    return;
+  }
+  await enterApp();
+}
+async function doLogout() {
+  if (!confirm('確定要登出嗎？')) return;
+  await sb.auth.signOut();
+  location.reload();
+}
+
+async function enterApp() {
+  document.getElementById('loginView').style.display = 'none';
+  document.getElementById('appView').style.display = 'block';
+  await fetchAll();
+  renderAll();
+  /* 手機切回這個畫面時自動更新（同仁間同步） */
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible') { await fetchAll(); renderAll(); }
+  });
+  /* 即時推播（若專案未開啟 Realtime 也不影響使用） */
+  try {
+    sb.channel('db-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'txns' }, refreshSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, refreshSoon)
+      .subscribe();
+  } catch (e) { /* Realtime 不可用時靜默略過 */ }
+}
+let refreshTimer;
+function refreshSoon() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(async () => { await fetchAll(); renderAll(); }, 400);
 }
 
 /* =====================================================
@@ -438,7 +546,7 @@ function stepQty(d) {
   el.value = Math.max(0, (parseInt(el.value) || 0) + d);
 }
 
-function saveTxn() {
+async function saveTxn() {
   const productId = document.getElementById('productSelect').value;
   const qty = parseInt(document.getElementById('qtyInput').value);
   if (!productId) return toast('請先新增商品');
@@ -454,16 +562,19 @@ function saveTxn() {
     if (!confirm(`${entryWh} 目前庫存只有 ${stockOf(productId, entryWh)}，確定要出 ${qty} 嗎？`)) return;
   }
 
-  store.data.txns.unshift({
-    id: 't' + Date.now() + Math.random().toString(36).slice(2, 6),
-    ts: Date.now(),
+  const btn = document.getElementById('saveBtn');
+  btn.disabled = true;
+  const { data, error } = await sb.from('txns').insert({
     type: entryType,
-    productId,
+    product_id: productId,
     wh: entryWh,
     qty: recordQty,
     note: document.getElementById('noteInput').value.trim(),
-  });
-  store.save();
+  }).select();
+  btn.disabled = false;
+  if (error) return toast('儲存失敗：' + error.message);
+
+  store.data.txns.unshift(mapTxn(data[0]));
   document.getElementById('qtyInput').value = 1;
   document.getElementById('noteInput').value = '';
   const p = store.data.products.find(p => p.id === productId);
@@ -477,14 +588,15 @@ function openNewProduct() {
   document.getElementById('npName').value = '';
   newProductDlg.showModal();
 }
-function confirmNewProduct() {
+async function confirmNewProduct() {
   const name = document.getElementById('npName').value.trim();
   const unit = document.getElementById('npUnit').value.trim() || '包';
   if (!name) return toast('請輸入商品名稱');
   if (store.data.products.some(p => p.name === name)) return toast('商品已存在');
-  const p = { id: 'p' + Date.now(), name, unit };
+  const { data, error } = await sb.from('products').insert({ name, unit }).select();
+  if (error) return toast('新增失敗：' + error.message);
+  const p = { id: data[0].id, name, unit };
   store.data.products.push(p);
-  store.save();
   newProductDlg.close();
   renderProductSelect();
   document.getElementById('productSelect').value = p.id;
@@ -544,9 +656,6 @@ function renderDash() {
         `<span class="item"><span class="wh-dot" style="background:${WH_COLORS[i]}"></span>${w}</span>`);
     });
   }
-
-  document.getElementById('demoCard').style.display =
-    (store.data.products.length || store.data.txns.length) ? 'none' : 'block';
 }
 
 /* =====================================================
@@ -596,46 +705,13 @@ function renderLog() {
       </div>`);
   });
 }
-function delTxn(id) {
+async function delTxn(id) {
   if (!confirm('刪除這筆紀錄？庫存會跟著還原。')) return;
+  const { error } = await sb.from('txns').delete().eq('id', id);
+  if (error) return toast('刪除失敗：' + error.message);
   store.data.txns = store.data.txns.filter(t => t.id !== id);
-  store.save();
   renderAll();
   toast('已刪除');
-}
-function clearAll() {
-  if (!confirm('確定清除全部商品與紀錄？此動作無法復原。')) return;
-  store.data = { products: [], txns: [] };
-  store.save();
-  renderAll();
-  toast('已清除全部資料');
-}
-
-/* =====================================================
-   範例資料
-   ===================================================== */
-function loadDemo() {
-  const items = [
-    ['煙燻滷鴨翅', '包'], ['煙燻鴨腿', '支'], ['滷豆干', '包'],
-    ['煙燻米血', '包'], ['滷大腸', '包'],
-  ];
-  const now = Date.now();
-  store.data.products = items.map(([name, unit], i) => ({ id: 'p_demo' + i, name, unit }));
-  store.data.txns = [];
-  store.data.products.forEach((p, i) => {
-    WAREHOUSES.forEach((w, j) => {
-      store.data.txns.push({
-        id: 't_demo' + i + '_' + j,
-        ts: now - (i * 3 + j) * 3600 * 1000,
-        type: 'in', productId: p.id, wh: w,
-        qty: [80, 40, 30, 120, 60][((i + j) * 7) % 5],
-        note: '範例資料',
-      });
-    });
-  });
-  store.save();
-  renderAll();
-  toast('已載入範例資料');
 }
 
 /* =====================================================
@@ -647,7 +723,7 @@ function toast(msg) {
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
 }
 
 function renderAll() {
@@ -661,7 +737,13 @@ function renderAll() {
 const td = new Date();
 document.getElementById('todayLabel').textContent =
   `${td.getFullYear()}/${td.getMonth() + 1}/${td.getDate()}`;
-renderAll();
+
+/* ---------- 啟動：檢查是否已登入 ---------- */
+(async () => {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) await enterApp();
+  else document.getElementById('loginView').style.display = 'flex';
+})();
 </script>
 </body>
 </html>
