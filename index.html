@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>包飯店庫存管理</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <style>
   :root {
     --surface-1: #fcfcfb;
@@ -209,6 +210,27 @@
   .empty { text-align: center; color: var(--text-muted); font-size: 14px; padding: 28px 0; }
   .sync-note { text-align: center; color: var(--text-muted); font-size: 12px; padding: 6px 0 14px; }
 
+  /* ---- 訂單與缺貨 ---- */
+  .hint { font-size: 12px; color: var(--text-muted); margin-bottom: 10px; line-height: 1.6; }
+  input[type="file"] {
+    width: 100%; padding: 12px; font-size: 14px; margin-bottom: 10px;
+    border: 1.5px dashed var(--border); border-radius: 10px;
+    background: var(--surface-1); color: var(--text-secondary);
+  }
+  table.stock td.short { color: var(--critical); font-weight: 700; }
+  table.stock td.ok { color: var(--good-text); }
+  .alert-card { border: 1.5px solid var(--critical); }
+  .alert-card h2 { color: var(--critical); }
+  .sched-week { margin-bottom: 14px; }
+  .sched-week .wk-title {
+    font-size: 13px; font-weight: 700; margin-bottom: 6px;
+    display: flex; justify-content: space-between; color: var(--text-secondary);
+  }
+  .sched-week .wk-title .overdue { color: var(--critical); }
+  .sched-line { display: flex; justify-content: space-between; font-size: 13px; padding: 5px 0; border-bottom: 1px solid var(--grid); }
+  .sched-line:last-child { border-bottom: none; }
+  .sched-line .q { font-variant-numeric: tabular-nums; font-weight: 600; }
+
   /* ---- Toast ---- */
   #toast {
     position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom));
@@ -267,6 +289,7 @@
 <main>
   <!-- ============ 總覽 ============ -->
   <section class="view active" id="view-dash">
+    <div class="card alert-card" id="dashShortage" style="display:none"></div>
     <div class="kpi-row">
       <div class="kpi"><div class="label">商品品項</div><div class="value" id="kpiProducts">0</div></div>
       <div class="kpi"><div class="label">今日入庫</div><div class="value" id="kpiInToday">0</div><div class="sub">筆</div></div>
@@ -340,6 +363,39 @@
     </div>
   </section>
 
+  <!-- ============ 訂單與缺貨 ============ -->
+  <section class="view" id="view-orders">
+    <div class="card">
+      <h2>📤 上傳 1Shop 訂單</h2>
+      <p class="hint">
+        1Shop 後台 → 訂單 → 篩選「物流狀態：等待出貨」→ 匯出 Excel，把檔案選進來即可。
+        每次上傳會以最新檔案為準，整批更新待出貨清單。
+      </p>
+      <input type="file" id="orderFile" accept=".xlsx">
+      <button class="btn-primary" id="uploadBtn" onclick="uploadOrders()">上傳並更新</button>
+      <div class="sync-note" id="uploadInfo"></div>
+    </div>
+
+    <div class="card">
+      <h2>⚠️ 缺貨比對（待出貨 vs 庫存）</h2>
+      <div style="overflow-x:auto">
+        <table class="stock">
+          <thead>
+            <tr><th>商品</th><th>待出貨</th><th>庫存</th><th>缺</th><th>最遲補貨</th></tr>
+          </thead>
+          <tbody id="shortageBody"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="shortageEmpty" style="display:none">尚未上傳訂單資料</div>
+    </div>
+
+    <div class="card">
+      <h2>📅 出貨排程需求</h2>
+      <div id="scheduleView"></div>
+      <div class="empty" id="scheduleEmpty" style="display:none">尚未上傳訂單資料</div>
+    </div>
+  </section>
+
   <!-- ============ 紀錄 ============ -->
   <section class="view" id="view-log">
     <div class="card">
@@ -353,6 +409,7 @@
   <button class="active" data-view="dash"><span class="ico">📊</span>總覽</button>
   <button data-view="entry"><span class="ico">✏️</span>輸入</button>
   <button data-view="stock"><span class="ico">📦</span>庫存</button>
+  <button data-view="orders"><span class="ico">📋</span>訂單</button>
   <button data-view="log"><span class="ico">🕐</span>紀錄</button>
 </nav>
 </div>
@@ -387,21 +444,23 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const WAREHOUSES = ['2F庫', '楠梓庫', '中正路庫'];
 const WH_COLORS = ['var(--wh-1)', 'var(--wh-2)', 'var(--wh-3)'];
 
-const store = { data: { products: [], txns: [] } };
+const store = { data: { products: [], txns: [], orders: [] } };
 
 function showLoading(on) { document.getElementById('loading').classList.toggle('show', on); }
 
 async function fetchAll() {
   showLoading(true);
   try {
-    const [pRes, tRes] = await Promise.all([
+    const [pRes, tRes, oRes] = await Promise.all([
       sb.from('products').select('*').order('created_at'),
       sb.from('txns').select('*').order('ts', { ascending: false }).limit(2000),
+      sb.from('order_items').select('*'),
     ]);
     if (pRes.error) throw pRes.error;
     if (tRes.error) throw tRes.error;
-    store.data.products = pRes.data.map(r => ({ id: r.id, name: r.name, unit: r.unit }));
+    store.data.products = pRes.data.map(r => ({ id: r.id, name: r.name, unit: r.unit, sku: r.sku || null }));
     store.data.txns = tRes.data.map(mapTxn);
+    store.data.orders = oRes.error ? [] : oRes.data; // order_items 表尚未建立時仍可使用其他功能
   } catch (e) {
     toast('連線失敗：' + (e.message || '請檢查網路'));
   } finally {
@@ -470,6 +529,7 @@ async function enterApp() {
     sb.channel('db-sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'txns' }, refreshSoon)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, refreshSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, refreshSoon)
       .subscribe();
   } catch (e) { /* Realtime 不可用時靜默略過 */ }
 }
@@ -482,7 +542,7 @@ function refreshSoon() {
 /* =====================================================
    畫面切換
    ===================================================== */
-const TITLES = { dash: '總覽', entry: '庫存輸入', stock: '各庫庫存', log: '異動紀錄' };
+const TITLES = { dash: '總覽', entry: '庫存輸入', stock: '各庫庫存', orders: '訂單與缺貨', log: '異動紀錄' };
 document.querySelectorAll('nav.tabbar button').forEach(btn => {
   btn.onclick = () => {
     document.querySelectorAll('nav.tabbar button').forEach(b => b.classList.remove('active'));
@@ -604,11 +664,229 @@ async function confirmNewProduct() {
 }
 
 /* =====================================================
+   1Shop 訂單上傳與缺貨比對
+   ===================================================== */
+function addWorkdays(d, n) {
+  const x = new Date(d); x.setHours(0, 0, 0, 0);
+  let c = 0;
+  while (c < n) {
+    x.setDate(x.getDate() + 1);
+    const dow = x.getDay();
+    if (dow !== 0 && dow !== 6) c++;
+  }
+  return x;
+}
+function fmtDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function fmtMD(iso) {
+  if (!iso) return '—';
+  const [y, m, d] = iso.split('-');
+  return `${+m}/${+d}`;
+}
+
+/* 解析 1Shop 匯出的訂單 Excel */
+function parseOrderXlsx(buf) {
+  const wb = XLSX.read(buf, { type: 'array' });
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+  /* 只取「等待出貨」，並排除最後的統計列（沒有訂單編號） */
+  const pending = rows.filter(r => String(r['訂單編號']).trim() && r['物流狀態'] === '等待出貨');
+
+  /* 特殊廠商：訂單內含「出貨區段-7/20~7/26出貨」品項 → 以區段日期為準 */
+  const windows = {};
+  for (const r of pending) {
+    const m = String(r['產品'] || '').match(/出貨區段[-－]?(\d{1,2})\/(\d{1,2})~(\d{1,2})\/(\d{1,2})/);
+    if (m) {
+      const y = new Date().getFullYear();
+      const s = new Date(y, +m[1] - 1, +m[2]);
+      const e = new Date(y, +m[3] - 1, +m[4]);
+      if (e.getTime() < Date.now() - 60 * 86400000) { s.setFullYear(y + 1); e.setFullYear(y + 1); } // 跨年
+      windows[r['訂單編號']] = { s, e };
+    }
+  }
+
+  const items = [];
+  for (const r of pending) {
+    const name = String(r['產品'] || '').trim();
+    if (!name || name.startsWith('出貨區段')) continue;
+    const ordered = new Date(String(r['建立日期']).replace(' ', 'T'));
+    const w = windows[r['訂單編號']];
+    items.push({
+      order_no: String(r['訂單編號']).trim(),
+      sku: String(r['產品SKU'] || '').trim() || null,
+      product_name: name,
+      qty: parseInt(r['產品數量']) || 0,
+      ordered_at: isNaN(ordered) ? null : ordered.toISOString(),
+      /* 一般訂單：付款日 +7~10 個工作天內出貨 */
+      ship_start: fmtDate(w ? w.s : addWorkdays(ordered, 7)),
+      ship_end: fmtDate(w ? w.e : addWorkdays(ordered, 10)),
+    });
+  }
+  return { items, orderCount: new Set(items.map(i => i.order_no)).size };
+}
+
+async function uploadOrders() {
+  const f = document.getElementById('orderFile').files[0];
+  if (!f) return toast('請先選擇訂單 Excel 檔');
+  const btn = document.getElementById('uploadBtn');
+  btn.disabled = true;
+  showLoading(true);
+  try {
+    const parsed = parseOrderXlsx(await f.arrayBuffer());
+    if (!parsed.items.length) { toast('檔案中沒有「等待出貨」的訂單'); return; }
+
+    /* 同步商品清單：新 SKU 自動建檔、同名商品自動補上 SKU */
+    const seen = new Map();
+    for (const it of parsed.items) {
+      const key = it.sku || 'n:' + it.product_name;
+      if (!seen.has(key)) seen.set(key, it);
+    }
+    for (const [, it] of seen) {
+      let p = it.sku ? store.data.products.find(p => p.sku === it.sku) : null;
+      if (p) continue;
+      p = store.data.products.find(p => p.name === it.product_name);
+      if (p) {
+        if (it.sku && !p.sku) {
+          const { error } = await sb.from('products').update({ sku: it.sku }).eq('id', p.id);
+          if (!error) p.sku = it.sku;
+        }
+      } else {
+        const { data, error } = await sb.from('products')
+          .insert({ name: it.product_name, unit: '包', sku: it.sku }).select();
+        if (error) throw error;
+        store.data.products.push({ id: data[0].id, name: it.product_name, unit: '包', sku: it.sku });
+      }
+    }
+
+    /* 整批更新待出貨快照 */
+    const del = await sb.from('order_items').delete().gte('uploaded_at', '1970-01-01');
+    if (del.error) throw del.error;
+    const ins = await sb.from('order_items').insert(parsed.items);
+    if (ins.error) throw ins.error;
+
+    await fetchAll();
+    renderAll();
+    document.getElementById('orderFile').value = '';
+    toast(`已更新：${parsed.orderCount} 張訂單、${parsed.items.length} 個品項`);
+  } catch (e) {
+    toast('上傳失敗：' + (e.message || e));
+  } finally {
+    btn.disabled = false;
+    showLoading(false);
+  }
+}
+
+/* 每個商品的需求 vs 庫存 */
+function demandRows() {
+  const byKey = {};
+  for (const o of store.data.orders) {
+    const k = o.sku || 'n:' + o.product_name;
+    if (!byKey[k]) byKey[k] = { sku: o.sku, name: o.product_name, total: 0, items: [] };
+    byKey[k].total += o.qty;
+    byKey[k].items.push(o);
+  }
+  const rows = Object.values(byKey).map(d => {
+    const p = store.data.products.find(p => (d.sku && p.sku === d.sku) || p.name === d.name);
+    const stock = p ? WAREHOUSES.reduce((a, w) => a + stockOf(p.id, w), 0) : 0;
+    d.items.sort((a, b) => (a.ship_start || '').localeCompare(b.ship_start || ''));
+    /* 依出貨日累計需求，找出庫存不夠用的第一天 → 最遲補貨日 */
+    let cum = 0, needBy = null;
+    for (const it of d.items) {
+      cum += it.qty;
+      if (cum > stock) { needBy = it.ship_start; break; }
+    }
+    return { ...d, stock, shortage: Math.max(0, d.total - stock), needBy };
+  });
+  rows.sort((a, b) => (b.shortage - a.shortage) || (a.needBy || '9999').localeCompare(b.needBy || '9999'));
+  return rows;
+}
+
+function weekStartOf(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  const dow = (d.getDay() + 6) % 7; // 週一為週首
+  d.setDate(d.getDate() - dow);
+  return fmtDate(d);
+}
+
+function renderOrders() {
+  const hasData = store.data.orders.length > 0;
+  document.getElementById('shortageEmpty').style.display = hasData ? 'none' : 'block';
+  document.getElementById('scheduleEmpty').style.display = hasData ? 'none' : 'block';
+
+  /* 上傳資訊 */
+  const info = document.getElementById('uploadInfo');
+  if (hasData) {
+    const last = store.data.orders.reduce((a, o) => o.uploaded_at > a ? o.uploaded_at : a, '');
+    const d = new Date(last);
+    info.textContent = `目前資料：${new Set(store.data.orders.map(o => o.order_no)).size} 張訂單，上傳於 ${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  } else info.textContent = '';
+
+  /* 缺貨比對表 */
+  const body = document.getElementById('shortageBody');
+  body.innerHTML = '';
+  const rows = demandRows();
+  rows.forEach(r => {
+    body.insertAdjacentHTML('beforeend', `
+      <tr>
+        <td>${r.name}</td>
+        <td>${r.total.toLocaleString()}</td>
+        <td>${r.stock.toLocaleString()}</td>
+        <td class="${r.shortage > 0 ? 'short' : 'ok'}">${r.shortage > 0 ? '缺 ' + r.shortage.toLocaleString() : '足夠'}</td>
+        <td class="${r.shortage > 0 ? 'short' : ''}">${r.needBy ? fmtMD(r.needBy) + ' 前' : '—'}</td>
+      </tr>`);
+  });
+
+  /* 出貨排程：依週分組 */
+  const sched = document.getElementById('scheduleView');
+  sched.innerHTML = '';
+  if (!hasData) return;
+  const today = fmtDate(new Date());
+  const thisWk = weekStartOf(today);
+  const buckets = {};
+  for (const o of store.data.orders) {
+    let label, order;
+    if (o.ship_start < today) { label = '🔴 已到期未出'; order = '0'; }
+    else {
+      const wk = weekStartOf(o.ship_start);
+      if (wk === thisWk) { label = '本週應出'; order = '1' + wk; }
+      else { label = `${fmtMD(wk)} 起那週`; order = '2' + wk; }
+    }
+    if (!buckets[order]) buckets[order] = { label, byName: {}, total: 0 };
+    buckets[order].byName[o.product_name] = (buckets[order].byName[o.product_name] || 0) + o.qty;
+    buckets[order].total += o.qty;
+  }
+  Object.keys(buckets).sort().forEach(k => {
+    const b = buckets[k];
+    const lines = Object.entries(b.byName).sort((a, x) => x[1] - a[1])
+      .map(([n, q]) => `<div class="sched-line"><span>${n}</span><span class="q">${q.toLocaleString()}</span></div>`).join('');
+    sched.insertAdjacentHTML('beforeend', `
+      <div class="sched-week">
+        <div class="wk-title"><span class="${k === '0' ? 'overdue' : ''}">${b.label}</span><span>${b.total.toLocaleString()} 件</span></div>
+        ${lines}
+      </div>`);
+  });
+}
+
+/* =====================================================
    總覽
    ===================================================== */
 function renderDash() {
   const mat = stockMatrix();
   document.getElementById('kpiProducts').textContent = store.data.products.length;
+
+  /* 缺貨警示 */
+  const alertCard = document.getElementById('dashShortage');
+  const shorts = store.data.orders.length ? demandRows().filter(r => r.shortage > 0) : [];
+  if (shorts.length) {
+    alertCard.style.display = 'block';
+    alertCard.innerHTML = '<h2>⚠️ 缺貨警示（' + shorts.length + ' 項）</h2>' +
+      shorts.slice(0, 5).map(r =>
+        `<div class="sched-line"><span>${r.name}</span><span class="q" style="color:var(--critical)">缺 ${r.shortage.toLocaleString()}・${r.needBy ? fmtMD(r.needBy) + ' 前' : ''}</span></div>`
+      ).join('') +
+      (shorts.length > 5 ? `<div class="hint" style="margin-top:8px">還有 ${shorts.length - 5} 項，到「訂單」頁查看完整清單</div>` : '');
+  } else {
+    alertCard.style.display = 'none';
+  }
 
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const t0 = today.getTime();
@@ -731,6 +1009,7 @@ function renderAll() {
   renderProductSelect();
   renderDash();
   renderStock();
+  renderOrders();
   renderLog();
 }
 
