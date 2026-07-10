@@ -378,11 +378,11 @@
     </div>
 
     <div class="card">
-      <h2>⚠️ 缺貨比對（待出貨 vs 庫存）</h2>
+      <h2>🏭 補貨建議（本月出貨需求＋安全庫存 50）</h2>
       <div style="overflow-x:auto">
         <table class="stock">
           <thead>
-            <tr><th>商品</th><th>待出貨</th><th>庫存</th><th>缺</th><th>最遲補貨</th></tr>
+            <tr><th>商品</th><th>本月待出</th><th>庫存</th><th>狀態</th></tr>
           </thead>
           <tbody id="shortageBody"></tbody>
         </table>
@@ -795,7 +795,9 @@ async function uploadOrders() {
   }
 }
 
-/* 每個商品的需求 vs 庫存（兩店同名商品的不同 SKU 會合併為同一列） */
+/* 每個商品的需求 vs 庫存（兩店同名商品的不同 SKU 會合併為同一列）
+   水位補貨法：建議補貨 = 本月底前要出的量 + 安全庫存 − 現有庫存 */
+const SAFETY_STOCK = 50; // 全品項統一安全庫存，之後可改為逐項設定
 function demandRows() {
   const byKey = {};
   for (const o of store.data.orders) {
@@ -805,19 +807,18 @@ function demandRows() {
     byKey[k].total += o.qty;
     byKey[k].items.push(o);
   }
+  const now = new Date();
+  const monthEnd = fmtDate(new Date(now.getFullYear(), now.getMonth() + 1, 0));
   const rows = Object.values(byKey).map(d => {
     const p = d.product;
     const stock = p ? WAREHOUSES.reduce((a, w) => a + stockOf(p.id, w), 0) : 0;
-    d.items.sort((a, b) => (a.ship_start || '').localeCompare(b.ship_start || ''));
-    /* 依出貨日累計需求，找出庫存不夠用的第一天 → 最遲補貨日 */
-    let cum = 0, needBy = null;
-    for (const it of d.items) {
-      cum += it.qty;
-      if (cum > stock) { needBy = it.ship_start; break; }
-    }
-    return { ...d, stock, shortage: Math.max(0, d.total - stock), needBy };
+    const monthDemand = d.items.filter(it => (it.ship_start || '') <= monthEnd)
+      .reduce((a, it) => a + it.qty, 0);
+    const farDemand = d.total - monthDemand;
+    const suggest = Math.max(0, monthDemand + SAFETY_STOCK - stock);
+    return { ...d, stock, monthDemand, farDemand, suggest };
   });
-  rows.sort((a, b) => (b.shortage - a.shortage) || (a.needBy || '9999').localeCompare(b.needBy || '9999'));
+  rows.sort((a, b) => (b.suggest - a.suggest) || (b.monthDemand - a.monthDemand));
   return rows;
 }
 
@@ -841,18 +842,20 @@ function renderOrders() {
     info.textContent = `目前資料：${new Set(store.data.orders.map(o => o.order_no)).size} 張訂單，上傳於 ${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   } else info.textContent = '';
 
-  /* 缺貨比對表 */
+  /* 補貨建議表 */
   const body = document.getElementById('shortageBody');
   body.innerHTML = '';
   const rows = demandRows();
+  const monthLabel = (new Date().getMonth() + 1) + '月底前';
   rows.forEach(r => {
+    const farNote = r.farDemand > 0
+      ? `<div class="unit-tag">遠期訂單另有 ${r.farDemand.toLocaleString()}（下月後出）</div>` : '';
     body.insertAdjacentHTML('beforeend', `
       <tr>
-        <td>${r.name}</td>
-        <td>${r.total.toLocaleString()}</td>
+        <td>${r.name}${farNote}</td>
+        <td>${r.monthDemand.toLocaleString()}</td>
         <td>${r.stock.toLocaleString()}</td>
-        <td class="${r.shortage > 0 ? 'short' : 'ok'}">${r.shortage > 0 ? '缺 ' + r.shortage.toLocaleString() : '足夠'}</td>
-        <td class="${r.shortage > 0 ? 'short' : ''}">${r.needBy ? fmtMD(r.needBy) + ' 前' : '—'}</td>
+        <td class="${r.suggest > 0 ? 'short' : 'ok'}">${r.suggest > 0 ? '⚠️ 建議補 ' + r.suggest.toLocaleString() : '✅ ' + monthLabel + '足夠'}</td>
       </tr>`);
   });
 
@@ -894,14 +897,14 @@ function renderDash() {
   const mat = stockMatrix();
   document.getElementById('kpiProducts').textContent = store.data.products.length;
 
-  /* 缺貨警示 */
+  /* 補貨警示 */
   const alertCard = document.getElementById('dashShortage');
-  const shorts = store.data.orders.length ? demandRows().filter(r => r.shortage > 0) : [];
+  const shorts = store.data.orders.length ? demandRows().filter(r => r.suggest > 0) : [];
   if (shorts.length) {
     alertCard.style.display = 'block';
-    alertCard.innerHTML = '<h2>⚠️ 缺貨警示（' + shorts.length + ' 項）</h2>' +
+    alertCard.innerHTML = '<h2>🏭 建議補貨（' + shorts.length + ' 項）</h2>' +
       shorts.slice(0, 5).map(r =>
-        `<div class="sched-line"><span>${r.name}</span><span class="q" style="color:var(--critical)">缺 ${r.shortage.toLocaleString()}・${r.needBy ? fmtMD(r.needBy) + ' 前' : ''}</span></div>`
+        `<div class="sched-line"><span>${r.name}</span><span class="q" style="color:var(--critical)">補 ${r.suggest.toLocaleString()}</span></div>`
       ).join('') +
       (shorts.length > 5 ? `<div class="hint" style="margin-top:8px">還有 ${shorts.length - 5} 項，到「訂單」頁查看完整清單</div>` : '');
   } else {
