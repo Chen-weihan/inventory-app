@@ -368,10 +368,11 @@
     <div class="card">
       <h2>📤 上傳 1Shop 訂單</h2>
       <p class="hint">
-        1Shop 後台 → 訂單 → 篩選「物流狀態：等待出貨」→ 匯出 Excel，把檔案選進來即可。
-        每次上傳會以最新檔案為準，整批更新待出貨清單。
+        兩個商店（燻香滷味、滷味V2）的訂單各匯出一份 Excel，可一次選取多個檔案上傳。
+        匯出時不必設篩選——系統只會採計「等待確認／確認中／已確認／處理中」且「已付款」、尚未出貨的訂單，其餘自動略過。
+        每次上傳以最新檔案為準，整批更新。
       </p>
-      <input type="file" id="orderFile" accept=".xlsx">
+      <input type="file" id="orderFile" accept=".xlsx" multiple>
       <button class="btn-primary" id="uploadBtn" onclick="uploadOrders()">上傳並更新</button>
       <div class="sync-note" id="uploadInfo"></div>
     </div>
@@ -689,8 +690,14 @@ function fmtMD(iso) {
 function parseOrderXlsx(buf) {
   const wb = XLSX.read(buf, { type: 'array' });
   const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
-  /* 只取「等待出貨」，並排除最後的統計列（沒有訂單編號） */
-  const pending = rows.filter(r => String(r['訂單編號']).trim() && r['物流狀態'] === '等待出貨');
+  /* Matt 的採計規則：四種進行中狀態 + 已付款 + 尚未出貨；並排除最後的統計列（沒有訂單編號） */
+  const OK_PROGRESS = ['等待確認', '確認中', '已確認', '處理中'];
+  const SHIPPED = ['已出貨', '配送中', '送達取貨點'];
+  const pending = rows.filter(r =>
+    String(r['訂單編號']).trim() &&
+    OK_PROGRESS.includes(String(r['訂單狀態']).trim()) &&
+    String(r['金流狀態']).trim() === '已付款' &&
+    !SHIPPED.includes(String(r['物流狀態']).trim()));
 
   /* 特殊廠商：訂單內含「出貨區段-7/20~7/26出貨」品項 → 以區段日期為準 */
   const windows = {};
@@ -726,14 +733,26 @@ function parseOrderXlsx(buf) {
 }
 
 async function uploadOrders() {
-  const f = document.getElementById('orderFile').files[0];
-  if (!f) return toast('請先選擇訂單 Excel 檔');
+  const files = [...document.getElementById('orderFile').files];
+  if (!files.length) return toast('請先選擇訂單 Excel 檔');
   const btn = document.getElementById('uploadBtn');
   btn.disabled = true;
   showLoading(true);
   try {
-    const parsed = parseOrderXlsx(await f.arrayBuffer());
-    if (!parsed.items.length) { toast('檔案中沒有「等待出貨」的訂單'); return; }
+    /* 多商店：可一次上傳多個檔案，依訂單編號去重後合併 */
+    const seenOrders = new Set();
+    const merged = [];
+    for (const f of files) {
+      const p = parseOrderXlsx(await f.arrayBuffer());
+      const fileOrders = new Set(p.items.map(i => i.order_no));
+      for (const no of fileOrders) {
+        if (seenOrders.has(no)) continue;
+        seenOrders.add(no);
+        merged.push(...p.items.filter(i => i.order_no === no));
+      }
+    }
+    const parsed = { items: merged, orderCount: seenOrders.size };
+    if (!parsed.items.length) { toast('檔案中沒有符合採計條件的訂單'); return; }
 
     /* 同步商品清單：新 SKU 自動建檔、同名商品自動補上 SKU */
     const seen = new Map();
