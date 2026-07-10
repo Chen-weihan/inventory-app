@@ -795,17 +795,18 @@ async function uploadOrders() {
   }
 }
 
-/* 每個商品的需求 vs 庫存 */
+/* 每個商品的需求 vs 庫存（兩店同名商品的不同 SKU 會合併為同一列） */
 function demandRows() {
   const byKey = {};
   for (const o of store.data.orders) {
-    const k = o.sku || 'n:' + o.product_name;
-    if (!byKey[k]) byKey[k] = { sku: o.sku, name: o.product_name, total: 0, items: [] };
+    const p = store.data.products.find(p => (o.sku && p.sku === o.sku) || p.name === o.product_name);
+    const k = p ? p.id : 'n:' + o.product_name;
+    if (!byKey[k]) byKey[k] = { product: p, name: p ? p.name : o.product_name, total: 0, items: [] };
     byKey[k].total += o.qty;
     byKey[k].items.push(o);
   }
   const rows = Object.values(byKey).map(d => {
-    const p = store.data.products.find(p => (d.sku && p.sku === d.sku) || p.name === d.name);
+    const p = d.product;
     const stock = p ? WAREHOUSES.reduce((a, w) => a + stockOf(p.id, w), 0) : 0;
     d.items.sort((a, b) => (a.ship_start || '').localeCompare(b.ship_start || ''));
     /* 依出貨日累計需求，找出庫存不夠用的第一天 → 最遲補貨日 */
