@@ -870,10 +870,13 @@ function renderOrders() {
   const body = document.getElementById('shortageBody');
   body.innerHTML = '';
   const rows = demandRows();
-  const monthLabel = (new Date().getMonth() + 1) + '月底前';
+  const now = new Date();
+  const monthLabel = (now.getMonth() + 1) + '月底前';
+  const monthEndLabel = (now.getMonth() + 1) + '/' + new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   rows.forEach(r => {
+    const unit = (r.product && r.product.unit) || '包';
     const farNote = r.farDemand > 0
-      ? `<div class="unit-tag">遠期訂單另有 ${r.farDemand.toLocaleString()}（下月後出）</div>` : '';
+      ? `<div class="unit-tag">${monthEndLabel} 後出貨另需 ${r.farDemand.toLocaleString()} ${unit}</div>` : '';
     body.insertAdjacentHTML('beforeend', `
       <tr>
         <td>${r.name}${farNote}</td>
