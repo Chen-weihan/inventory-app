@@ -716,7 +716,8 @@ function parseOrderXlsx(buf) {
   /* 特殊廠商：訂單內含「出貨區段-7/20~7/26出貨」品項 → 以區段日期為準 */
   const windows = {};
   for (const r of pending) {
-    const m = String(r['產品'] || '').match(/出貨區段[-－]?(\d{1,2})\/(\d{1,2})~(\d{1,2})\/(\d{1,2})/);
+    /* 區段日期的連接符號有「~」也有「-」兩種格式（例：7/20~7/26、8/17-8/23）*/
+    const m = String(r['產品'] || '').match(/出貨區段[-－]?(\d{1,2})\/(\d{1,2})\s*[~\-－～]\s*(\d{1,2})\/(\d{1,2})/);
     if (m) {
       const y = new Date().getFullYear();
       const s = new Date(y, +m[1] - 1, +m[2]);
