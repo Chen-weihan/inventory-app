@@ -688,7 +688,8 @@ function fmtMD(iso) {
 
 /* 解析 1Shop 匯出的訂單 Excel */
 function parseOrderXlsx(buf) {
-  const wb = XLSX.read(buf, { type: 'array' });
+  /* cellDates:true → 被 Excel 開啟另存過的檔案，日期欄會變成日期格式，一併正確處理 */
+  const wb = XLSX.read(buf, { type: 'array', cellDates: true });
   const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
   /* Matt 的採計規則：四種進行中狀態 + 已付款 + 尚未出貨；並排除最後的統計列（沒有訂單編號） */
   const OK_PROGRESS = ['等待確認', '確認中', '已確認', '處理中'];
@@ -713,23 +714,28 @@ function parseOrderXlsx(buf) {
   }
 
   const items = [];
+  let badDates = 0;
   for (const r of pending) {
     const name = String(r['產品'] || '').trim();
     if (!name || name.startsWith('出貨區段')) continue;
-    const ordered = new Date(String(r['建立日期']).replace(' ', 'T'));
+    const rawDate = r['建立日期'];
+    const ordered = rawDate instanceof Date
+      ? rawDate
+      : new Date(String(rawDate).trim().replace(' ', 'T'));
+    if (isNaN(ordered)) { badDates++; continue; }
     const w = windows[r['訂單編號']];
     items.push({
       order_no: String(r['訂單編號']).trim(),
       sku: String(r['產品SKU'] || '').trim() || null,
       product_name: name,
       qty: parseInt(r['產品數量']) || 0,
-      ordered_at: isNaN(ordered) ? null : ordered.toISOString(),
+      ordered_at: ordered.toISOString(),
       /* 一般訂單：付款日 +7~10 個工作天內出貨 */
       ship_start: fmtDate(w ? w.s : addWorkdays(ordered, 7)),
       ship_end: fmtDate(w ? w.e : addWorkdays(ordered, 10)),
     });
   }
-  return { items, orderCount: new Set(items.map(i => i.order_no)).size };
+  return { items, orderCount: new Set(items.map(i => i.order_no)).size, badDates };
 }
 
 async function uploadOrders() {
@@ -742,14 +748,19 @@ async function uploadOrders() {
     /* 多商店：可一次上傳多個檔案，依訂單編號去重後合併 */
     const seenOrders = new Set();
     const merged = [];
+    let badDates = 0;
     for (const f of files) {
       const p = parseOrderXlsx(await f.arrayBuffer());
+      badDates += p.badDates || 0;
       const fileOrders = new Set(p.items.map(i => i.order_no));
       for (const no of fileOrders) {
         if (seenOrders.has(no)) continue;
         seenOrders.add(no);
         merged.push(...p.items.filter(i => i.order_no === no));
       }
+    }
+    if (badDates > 0) {
+      alert(`注意：有 ${badDates} 筆資料的日期格式無法辨識，已略過。\n請重新從 1shop 匯出檔案後直接上傳（不要先用 Excel 開啟/另存）。`);
     }
     const parsed = { items: merged, orderCount: seenOrders.size };
     if (!parsed.items.length) { toast('檔案中沒有符合採計條件的訂單'); return; }
