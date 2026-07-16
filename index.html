@@ -699,6 +699,15 @@ function fmtMD(iso) {
   return `${+m}/${+d}`;
 }
 
+/* 商品名稱歸戶對照表：1shop 上同商品的不同命名 → 統一名稱
+   （新增對照時：左邊填 1shop 顯示的完整品名，右邊填統一後的名稱）*/
+const NAME_ALIASES = {
+  '煙燻雞翅－8支/包-原味': '煙燻雞翅',
+  '煙燻雞翅－8支/包-口味 , 原味': '煙燻雞翅',
+  '煙燻雞翅－8支/包-辣味滷雞翅': '辣味滷雞翅',
+  '煙燻雞翅－8支/包-口味 , 辣味': '辣味滷雞翅',
+};
+
 /* 解析 1Shop 匯出的訂單 Excel */
 function parseOrderXlsx(buf) {
   /* cellDates:true → 被 Excel 開啟另存過的檔案，日期欄會變成日期格式，一併正確處理 */
@@ -730,8 +739,9 @@ function parseOrderXlsx(buf) {
   const items = [];
   let badDates = 0;
   for (const r of pending) {
-    const name = String(r['產品'] || '').trim();
+    let name = String(r['產品'] || '').trim();
     if (!name || name.startsWith('出貨區段')) continue;
+    name = NAME_ALIASES[name] || name;
     const rawDate = r['建立日期'];
     const ordered = rawDate instanceof Date
       ? rawDate
