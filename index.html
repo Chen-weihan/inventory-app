@@ -839,7 +839,10 @@ const canonName = n => NAME_ALIASES[n] || n;
 function demandRows() {
   const byKey = {};
   for (const o of store.data.orders) {
-    const k = canonName(o.product_name);
+    /* 先用 SKU 對應商品檔（同SKU不同名自動合併），再做名稱歸戶 */
+    const p = (o.sku && store.data.products.find(p => p.sku === o.sku))
+      || store.data.products.find(p => p.name === o.product_name);
+    const k = canonName(p ? p.name : o.product_name);
     if (!byKey[k]) byKey[k] = { name: k, total: 0, items: [] };
     byKey[k].total += o.qty;
     byKey[k].items.push(o);
@@ -1083,7 +1086,7 @@ function renderAll() {
   renderLog();
 }
 
-const APP_VER = 'v10';
+const APP_VER = 'v11';
 const td = new Date();
 document.getElementById('todayLabel').textContent =
   `${td.getFullYear()}/${td.getMonth() + 1}/${td.getDate()}・${APP_VER}`;
