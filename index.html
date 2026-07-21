@@ -830,28 +830,37 @@ async function uploadOrders() {
   }
 }
 
-/* 每個商品的需求 vs 庫存（兩店同名商品的不同 SKU 會合併為同一列）
+/* 每個商品的需求 vs 庫存
+   - 顯示時以「歸戶後名稱」分組：不論資料庫存的是新名或舊名，一律合併
+   - 兩店同名商品的不同 SKU 也合併；庫存加總所有歸戶到同名的商品
    水位補貨法：建議補貨 = 本月底前要出的量 + 安全庫存 − 現有庫存 */
 const SAFETY_STOCK = 50; // 全品項統一安全庫存，之後可改為逐項設定
+const canonName = n => NAME_ALIASES[n] || n;
 function demandRows() {
   const byKey = {};
   for (const o of store.data.orders) {
-    const p = store.data.products.find(p => (o.sku && p.sku === o.sku) || p.name === o.product_name);
-    const k = p ? p.id : 'n:' + o.product_name;
-    if (!byKey[k]) byKey[k] = { product: p, name: p ? p.name : o.product_name, total: 0, items: [] };
+    const k = canonName(o.product_name);
+    if (!byKey[k]) byKey[k] = { name: k, total: 0, items: [] };
     byKey[k].total += o.qty;
     byKey[k].items.push(o);
   }
   const now = new Date();
   const monthEnd = fmtDate(new Date(now.getFullYear(), now.getMonth() + 1, 0));
   const rows = Object.values(byKey).map(d => {
-    const p = d.product;
-    const stock = p ? WAREHOUSES.reduce((a, w) => a + stockOf(p.id, w), 0) : 0;
+    /* 歸戶到這個名稱的所有商品檔（含舊名建檔者），庫存合併計算 */
+    let prods = store.data.products.filter(p => canonName(p.name) === d.name);
+    if (!prods.length) {
+      const skus = new Set(d.items.map(i => i.sku).filter(Boolean));
+      prods = store.data.products.filter(p => p.sku && skus.has(p.sku));
+    }
+    const stock = prods.reduce((a, p) =>
+      a + WAREHOUSES.reduce((s, w) => s + stockOf(p.id, w), 0), 0);
+    const unit = (prods[0] && prods[0].unit) || '包';
     const monthDemand = d.items.filter(it => (it.ship_start || '') <= monthEnd)
       .reduce((a, it) => a + it.qty, 0);
     const farDemand = d.total - monthDemand;
     const suggest = Math.max(0, monthDemand + SAFETY_STOCK - stock);
-    return { ...d, stock, monthDemand, farDemand, suggest };
+    return { ...d, stock, unit, monthDemand, farDemand, suggest };
   });
   rows.sort((a, b) => (b.suggest - a.suggest) || (b.monthDemand - a.monthDemand));
   return rows;
@@ -885,9 +894,8 @@ function renderOrders() {
   const monthLabel = (now.getMonth() + 1) + '月底前';
   const monthEndLabel = (now.getMonth() + 1) + '/' + new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   rows.forEach(r => {
-    const unit = (r.product && r.product.unit) || '包';
     const farNote = r.farDemand > 0
-      ? `<div class="unit-tag">${monthEndLabel} 後出貨另需 ${r.farDemand.toLocaleString()} ${unit}</div>` : '';
+      ? `<div class="unit-tag">${monthEndLabel} 後出貨另需 ${r.farDemand.toLocaleString()} ${r.unit}</div>` : '';
     body.insertAdjacentHTML('beforeend', `
       <tr>
         <td>${r.name}${farNote}</td>
@@ -913,7 +921,8 @@ function renderOrders() {
       else { label = `${fmtMD(wk)} 起那週`; order = '2' + wk; }
     }
     if (!buckets[order]) buckets[order] = { label, byName: {}, total: 0 };
-    buckets[order].byName[o.product_name] = (buckets[order].byName[o.product_name] || 0) + o.qty;
+    const cn = canonName(o.product_name);
+    buckets[order].byName[cn] = (buckets[order].byName[cn] || 0) + o.qty;
     buckets[order].total += o.qty;
   }
   Object.keys(buckets).sort().forEach(k => {
@@ -1074,9 +1083,10 @@ function renderAll() {
   renderLog();
 }
 
+const APP_VER = 'v10';
 const td = new Date();
 document.getElementById('todayLabel').textContent =
-  `${td.getFullYear()}/${td.getMonth() + 1}/${td.getDate()}`;
+  `${td.getFullYear()}/${td.getMonth() + 1}/${td.getDate()}・${APP_VER}`;
 
 /* ---------- 啟動：檢查是否已登入 ---------- */
 (async () => {
