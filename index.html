@@ -699,6 +699,11 @@ function fmtMD(iso) {
   return `${+m}/${+d}`;
 }
 
+/* 非商品的行政品項：品名含這些關鍵字的一律不計入任何統計
+   （新增排除字時：加一個字串進這個清單即可）*/
+const EXCLUDE_NAME_KEYWORDS = ['出貨區段', '預購', '信用卡退刷', '轉預購單隨單贈送'];
+const isExcludedName = n => EXCLUDE_NAME_KEYWORDS.some(k => String(n).includes(k));
+
 /* 商品名稱歸戶對照表：1shop 上同商品的不同命名 → 統一名稱
    （新增對照時：左邊填 1shop 顯示的完整品名，右邊填統一後的名稱）*/
 const NAME_ALIASES = {
@@ -740,7 +745,7 @@ function parseOrderXlsx(buf) {
   let badDates = 0;
   for (const r of pending) {
     let name = String(r['產品'] || '').trim();
-    if (!name || name.startsWith('出貨區段')) continue;
+    if (!name || isExcludedName(name)) continue;
     name = NAME_ALIASES[name] || name;
     const rawDate = r['建立日期'];
     const ordered = rawDate instanceof Date
@@ -839,6 +844,7 @@ const canonName = n => NAME_ALIASES[n] || n;
 function demandRows() {
   const byKey = {};
   for (const o of store.data.orders) {
+    if (isExcludedName(o.product_name)) continue; /* 行政品項不計入（含資料庫既有舊資料） */
     /* 先用 SKU 對應商品檔（同SKU不同名自動合併），再做名稱歸戶 */
     const p = (o.sku && store.data.products.find(p => p.sku === o.sku))
       || store.data.products.find(p => p.name === o.product_name);
@@ -916,6 +922,7 @@ function renderOrders() {
   const thisWk = weekStartOf(today);
   const buckets = {};
   for (const o of store.data.orders) {
+    if (isExcludedName(o.product_name)) continue; /* 行政品項不計入排程 */
     let label, order;
     if (o.ship_start < today) { label = '🔴 已到期未出'; order = '0'; }
     else {
@@ -1086,7 +1093,7 @@ function renderAll() {
   renderLog();
 }
 
-const APP_VER = 'v11';
+const APP_VER = 'v12';
 const td = new Date();
 document.getElementById('todayLabel').textContent =
   `${td.getFullYear()}/${td.getMonth() + 1}/${td.getDate()}・${APP_VER}`;
