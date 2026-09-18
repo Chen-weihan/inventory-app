@@ -497,10 +497,12 @@ function stockOf(productId, wh) {
   return s;
 }
 function stockMatrix() {
-  return store.data.products.map(p => {
-    const perWh = WAREHOUSES.map(w => stockOf(p.id, w));
-    return { p, perWh, total: perWh.reduce((a, b) => a + b, 0) };
-  });
+  return store.data.products
+    .filter(p => !isExcludedName(p.name)) /* 行政品項不列入庫存表與各庫總量 */
+    .map(p => {
+      const perWh = WAREHOUSES.map(w => stockOf(p.id, w));
+      return { p, perWh, total: perWh.reduce((a, b) => a + b, 0) };
+    });
 }
 
 /* =====================================================
@@ -606,7 +608,7 @@ function renderProductSelect() {
     sel.appendChild(o);
     return;
   }
-  store.data.products.forEach(p => {
+  store.data.products.filter(p => !isExcludedName(p.name)).forEach(p => {
     const o = document.createElement('option');
     o.value = p.id;
     o.textContent = `${p.name}（${p.unit}）`;
@@ -1093,7 +1095,7 @@ function renderAll() {
   renderLog();
 }
 
-const APP_VER = 'v12';
+const APP_VER = 'v13';
 const td = new Date();
 document.getElementById('todayLabel').textContent =
   `${td.getFullYear()}/${td.getMonth() + 1}/${td.getDate()}・${APP_VER}`;
