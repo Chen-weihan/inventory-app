@@ -809,6 +809,10 @@ async function uploadOrders() {
     if (!parsed.items.length) { toast('檔案中沒有符合採計條件的訂單'); return; }
 
     /* 同步商品清單：新 SKU 自動建檔、同名商品自動補上 SKU */
+    /* 同步前先重新抓最新商品清單（避免頁面開太久、商品快取過期造成重複建檔） */
+    const freshProds = await fetchTable('products', 'created_at');
+    store.data.products = freshProds.map(r => ({ id: r.id, name: r.name, unit: r.unit, sku: r.sku || null }));
+
     const seen = new Map();
     for (const it of parsed.items) {
       const key = it.sku || 'n:' + it.product_name;
@@ -823,12 +827,27 @@ async function uploadOrders() {
           const { error } = await sb.from('products').update({ sku: it.sku }).eq('id', p.id);
           if (!error) p.sku = it.sku;
         }
-      } else {
-        const { data, error } = await sb.from('products')
-          .insert({ name: it.product_name, unit: '包', sku: it.sku }).select();
-        if (error) throw error;
-        store.data.products.push({ id: data[0].id, name: it.product_name, unit: '包', sku: it.sku });
+        continue;
       }
+      const ins = await sb.from('products')
+        .insert({ name: it.product_name, unit: '包', sku: it.sku }).select();
+      if (ins.error) {
+        /* 撞到重複（其他裝置已建過同名/同SKU商品）→ 抓回既有的沿用，不中斷上傳 */
+        if (ins.error.code === '23505' || /duplicate key/i.test(ins.error.message || '')) {
+          let ex = (await sb.from('products').select('*').eq('name', it.product_name)).data || [];
+          if (!ex.length && it.sku) {
+            ex = (await sb.from('products').select('*').eq('sku', it.sku)).data || [];
+          }
+          ex.forEach(r => {
+            if (!store.data.products.some(q => q.id === r.id)) {
+              store.data.products.push({ id: r.id, name: r.name, unit: r.unit, sku: r.sku || null });
+            }
+          });
+          continue;
+        }
+        throw ins.error;
+      }
+      store.data.products.push({ id: ins.data[0].id, name: it.product_name, unit: '包', sku: it.sku });
     }
 
     /* 整批更新待出貨快照 */
@@ -1112,7 +1131,7 @@ function renderAll() {
   renderLog();
 }
 
-const APP_VER = 'v15';
+const APP_VER = 'v16';
 const td = new Date();
 document.getElementById('todayLabel').textContent =
   `${td.getFullYear()}/${td.getMonth() + 1}/${td.getDate()}・${APP_VER}`;
