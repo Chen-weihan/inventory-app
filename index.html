@@ -712,7 +712,7 @@ function fmtMD(iso) {
 
 /* 非商品的行政品項：品名含這些關鍵字的一律不計入任何統計
    （新增排除字時：加一個字串進這個清單即可）*/
-const EXCLUDE_NAME_KEYWORDS = ['出貨區段', '預購', '信用卡退刷', '轉預購單隨單贈送'];
+const EXCLUDE_NAME_KEYWORDS = ['出貨區段', '信用卡退刷', '轉預購單隨單贈送'];
 const isExcludedName = n => EXCLUDE_NAME_KEYWORDS.some(k => String(n).includes(k));
 
 /* 商品名稱歸戶對照表：1shop 上同商品的不同命名 → 統一名稱
@@ -757,7 +757,7 @@ function parseOrderXlsx(buf) {
   for (const r of pending) {
     let name = String(r['產品'] || '').trim();
     if (!name || isExcludedName(name)) continue;
-    name = NAME_ALIASES[name] || name;
+    name = canonName(name);
     const rawDate = r['建立日期'];
     const ordered = rawDate instanceof Date
       ? rawDate
@@ -792,6 +792,9 @@ async function uploadOrders() {
     for (const f of files) {
       const p = parseOrderXlsx(await f.arrayBuffer());
       badDates += p.badDates || 0;
+      if (p.orderCount === 50) {
+        alert(`提醒：「${f.name}」剛好只有 50 張訂單。\n1shop 匯出視窗預設是「目前頁面：50 個」（只匯第一頁）！\n請確認匯出時有改選「目前篩選條件」，否則後面的訂單會漏掉。`);
+      }
       const fileOrders = new Set(p.items.map(i => i.order_no));
       for (const no of fileOrders) {
         if (seenOrders.has(no)) continue;
@@ -851,7 +854,12 @@ async function uploadOrders() {
    - 兩店同名商品的不同 SKU 也合併；庫存加總所有歸戶到同名的商品
    水位補貨法：建議補貨 = 本月底前要出的量 + 安全庫存 − 現有庫存 */
 const SAFETY_STOCK = 50; // 全品項統一安全庫存，之後可改為逐項設定
-const canonName = n => NAME_ALIASES[n] || n;
+/* 歸戶：先去掉「【預購 | 中秋後出貨】」這類暫時性的【…】前綴（檔期結束就會消失的活動名），
+   再套名稱對照表 → 預購版商品的需求自動併入原商品 */
+const canonName = n => {
+  const s = String(n).replace(/^【[^】]*】\s*/, '').trim();
+  return NAME_ALIASES[s] || s;
+};
 function demandRows() {
   const byKey = {};
   for (const o of store.data.orders) {
@@ -1104,7 +1112,7 @@ function renderAll() {
   renderLog();
 }
 
-const APP_VER = 'v14';
+const APP_VER = 'v15';
 const td = new Date();
 document.getElementById('todayLabel').textContent =
   `${td.getFullYear()}/${td.getMonth() + 1}/${td.getDate()}・${APP_VER}`;
