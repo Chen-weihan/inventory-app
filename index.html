@@ -715,14 +715,22 @@ function fmtMD(iso) {
 const EXCLUDE_NAME_KEYWORDS = ['出貨區段', '信用卡退刷', '轉預購單隨單贈送'];
 const isExcludedName = n => EXCLUDE_NAME_KEYWORDS.some(k => String(n).includes(k));
 
-/* 商品名稱歸戶對照表：1shop 上同商品的不同命名 → 統一名稱
-   （新增對照時：左邊填 1shop 顯示的完整品名，右邊填統一後的名稱）*/
+/* 商品名稱歸戶引擎：不同廠商/銷售頁的命名小差異自動併為同一品項
+   normalizeName 統一寫法：去【…】活動前綴、去所有空白、半形-轉全形－、全形，轉半形,
+   canonName 再做：口味別名對照 + 結尾「－原味」視為預設口味去除
+   （新增對照時：左邊填「統一寫法後」的品名，右邊填歸戶名稱）*/
 const NAME_ALIASES = {
-  '煙燻雞翅－8支/包-原味': '煙燻雞翅',
-  '煙燻雞翅－8支/包-口味 , 原味': '煙燻雞翅',
-  '煙燻雞翅－8支/包-辣味滷雞翅': '辣味滷雞翅',
-  '煙燻雞翅－8支/包-口味 , 辣味': '辣味滷雞翅',
+  '煙燻雞翅－8支/包': '煙燻雞翅',
+  '煙燻雞翅－8支/包－原味': '煙燻雞翅',
+  '煙燻雞翅－8支/包－口味,原味': '煙燻雞翅',
+  '煙燻雞翅－8支/包－辣味滷雞翅': '辣味滷雞翅',
+  '煙燻雞翅－8支/包－口味,辣味': '辣味滷雞翅',
 };
+const normalizeName = n => String(n)
+  .replace(/^【[^】]*】\s*/, '')
+  .replace(/\s+/g, '')
+  .replace(/-/g, '－')
+  .replace(/，/g, ',');
 
 /* 解析 1Shop 匯出的訂單 Excel */
 function parseOrderXlsx(buf) {
@@ -873,11 +881,13 @@ async function uploadOrders() {
    - 兩店同名商品的不同 SKU 也合併；庫存加總所有歸戶到同名的商品
    水位補貨法：建議補貨 = 本月底前要出的量 + 安全庫存 − 現有庫存 */
 const SAFETY_STOCK = 50; // 全品項統一安全庫存，之後可改為逐項設定
-/* 歸戶：先去掉「【預購 | 中秋後出貨】」這類暫時性的【…】前綴（檔期結束就會消失的活動名），
-   再套名稱對照表 → 預購版商品的需求自動併入原商品 */
+/* 歸戶：統一寫法 → 口味別名對照 → 去掉結尾「－原味」（原味＝預設口味）
+   讓【預購…】前綴、-原味有無、空格、全半形差異全部併為同一品項 */
 const canonName = n => {
-  const s = String(n).replace(/^【[^】]*】\s*/, '').trim();
-  return NAME_ALIASES[s] || s;
+  const b = normalizeName(n);
+  if (NAME_ALIASES[b]) return NAME_ALIASES[b];
+  const b2 = b.replace(/－?原味$/, '');
+  return NAME_ALIASES[b2] || b2;
 };
 function demandRows() {
   const byKey = {};
@@ -1131,7 +1141,7 @@ function renderAll() {
   renderLog();
 }
 
-const APP_VER = 'v16';
+const APP_VER = 'v17';
 const td = new Date();
 document.getElementById('todayLabel').textContent =
   `${td.getFullYear()}/${td.getMonth() + 1}/${td.getDate()}・${APP_VER}`;
