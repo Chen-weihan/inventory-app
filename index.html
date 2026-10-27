@@ -727,7 +727,7 @@ const NAME_ALIASES = {
   '煙燻雞翅－8支/包－口味,辣味': '辣味滷雞翅',
 };
 const normalizeName = n => String(n)
-  .replace(/^【[^】]*】\s*/, '')
+  .replace(/【[^】]*】/g, '')   /* 去掉名稱中任何位置的【…】標籤（活動/備註用） */
   .replace(/\s+/g, '')
   .replace(/-/g, '－')
   .replace(/，/g, ',');
@@ -1141,7 +1141,7 @@ function renderAll() {
   renderLog();
 }
 
-const APP_VER = 'v17';
+const APP_VER = 'v18';
 const td = new Date();
 document.getElementById('todayLabel').textContent =
   `${td.getFullYear()}/${td.getMonth() + 1}/${td.getDate()}・${APP_VER}`;
