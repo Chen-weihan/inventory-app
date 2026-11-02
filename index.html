@@ -153,6 +153,7 @@
   }
   .chips button.sel { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface-1)); }
 
+  textarea,
   select, input[type="text"], input[type="number"], input[type="email"], input[type="password"] {
     width: 100%; padding: 13px 12px; font-size: 16px;
     border: 1px solid var(--border); border-radius: 10px;
@@ -405,6 +406,28 @@
     </div>
   </section>
 
+  <!-- ============ 彙總統計 ============ -->
+  <section class="view" id="view-tally">
+    <div class="card">
+      <h2>🧮 品項彙總（貼上文字清單）</h2>
+      <p class="hint">
+        把各部分的清單原文貼進來（格式：SKU品名*數量，可含「共 N 個」與金額行）。
+        系統會自動歸戶加總、核對各部分小計，並輸出 LINE 用格式。
+      </p>
+      <textarea id="tallyInput" rows="10" placeholder="318937-2煙燻雞翅－8支/包-辣味滷雞翅*87&#10;945865-1〔煙燻雞翅－8支/包〕-原味*66&#10;…&#10;共 153 個"></textarea>
+      <button class="btn-primary" style="margin-top:10px" onclick="runTally()">計算彙總</button>
+    </div>
+    <div class="card" id="tallyWarnCard" style="display:none">
+      <h2>⚠️ 檢查結果</h2>
+      <div id="tallyWarn" style="font-size:13px; line-height:1.8"></div>
+    </div>
+    <div class="card" id="tallyOutCard" style="display:none">
+      <h2>📋 LINE 用結果</h2>
+      <pre id="tallyOut" style="font-size:15px; line-height:1.7; white-space:pre-wrap; margin:0 0 10px"></pre>
+      <button class="btn-ghost" onclick="copyTally()">複製結果</button>
+    </div>
+  </section>
+
   <!-- ============ 紀錄 ============ -->
   <section class="view" id="view-log">
     <div class="card">
@@ -419,6 +442,7 @@
   <button data-view="entry"><span class="ico">✏️</span>輸入</button>
   <button data-view="stock"><span class="ico">📦</span>庫存</button>
   <button data-view="orders"><span class="ico">📋</span>訂單</button>
+  <button data-view="tally"><span class="ico">🧮</span>彙總</button>
   <button data-view="log"><span class="ico">🕐</span>紀錄</button>
 </nav>
 </div>
@@ -567,7 +591,7 @@ function refreshSoon() {
 /* =====================================================
    畫面切換
    ===================================================== */
-const TITLES = { dash: '總覽', entry: '庫存輸入', stock: '各庫庫存', orders: '訂單與缺貨', log: '異動紀錄' };
+const TITLES = { dash: '總覽', entry: '庫存輸入', stock: '各庫庫存', orders: '訂單與缺貨', tally: '彙總統計', log: '異動紀錄' };
 document.querySelectorAll('nav.tabbar button').forEach(btn => {
   btn.onclick = () => {
     document.querySelectorAll('nav.tabbar button').forEach(b => b.classList.remove('active'));
@@ -715,22 +739,53 @@ function fmtMD(iso) {
 const EXCLUDE_NAME_KEYWORDS = ['出貨區段', '信用卡退刷', '轉預購單隨單贈送'];
 const isExcludedName = n => EXCLUDE_NAME_KEYWORDS.some(k => String(n).includes(k));
 
-/* 商品名稱歸戶引擎：不同廠商/銷售頁的命名小差異自動併為同一品項
-   normalizeName 統一寫法：去【…】活動前綴、去所有空白、半形-轉全形－、全形，轉半形,
-   canonName 再做：口味別名對照 + 結尾「－原味」視為預設口味去除
-   （新增對照時：左邊填「統一寫法後」的品名，右邊填歸戶名稱）*/
-const NAME_ALIASES = {
-  '煙燻雞翅－8支/包': '煙燻雞翅',
-  '煙燻雞翅－8支/包－原味': '煙燻雞翅',
-  '煙燻雞翅－8支/包－口味,原味': '煙燻雞翅',
-  '煙燻雞翅－8支/包－辣味滷雞翅': '辣味滷雞翅',
-  '煙燻雞翅－8支/包－口味,辣味': '辣味滷雞翅',
-};
-const normalizeName = n => String(n)
-  .replace(/【[^】]*】/g, '')   /* 去掉名稱中任何位置的【…】標籤（活動/備註用） */
+/* ============================================================
+   品名歸戶引擎（關鍵字優先序）：不依賴 SKU、忽略規格差異
+   順序很重要：乾鍋、辣味要先判斷，否則會被誤歸到煙燻類
+   ============================================================ */
+const CANON_RULES = [
+  { kw: ['乾鍋', '鴨翅'], name: '乾鍋鴨翅',   cat: '乾鍋' },
+  { kw: ['乾鍋', '雞爪'], name: '乾鍋雞爪',   cat: '乾鍋' },
+  { kw: ['乾鍋', '米血'], name: '乾鍋米血',   cat: '乾鍋' },
+  { kw: ['雞翅', '辣味'], name: '辣味滷雞翅', cat: '雞' },
+  { kw: ['雞翅'],         name: '煙燻雞翅',   cat: '雞' },
+  { kw: ['雞爪'],         name: '煙燻雞爪',   cat: '雞' },
+  { kw: ['雞胗'],         name: '煙燻雞胗',   cat: '雞' },
+  { kw: ['雞心'],         name: '煙燻雞心',   cat: '雞' },
+  { kw: ['鵪鶉蛋'],       name: '鵪鶉蛋',     cat: '雞' },
+  { kw: ['鴨翅'],         name: '煙燻鴨翅',   cat: '鴨' },
+  { kw: ['米血'],         name: '滷米血',     cat: '鴨' },
+  { kw: ['鴨舌'],         name: '煙燻鴨舌',   cat: '鴨' },
+  { kw: ['鴨腱頭'],       name: '煙燻鴨腱頭', cat: '鴨' },
+  { kw: ['豬耳朵'],       name: '煙燻豬耳朵', cat: '豬' },
+  { kw: ['豬筋肉'],       name: '滷豬筋肉',   cat: '豬' },
+  { kw: ['豬腱肉'],       name: '滷豬腱肉',   cat: '豬' },
+  { kw: ['豆乾'],         name: '滷豆乾',     cat: '豆' },
+  { kw: ['豆皮'],         name: '滷豆皮',     cat: '豆' },
+  { kw: ['百頁'],         name: '滷百頁豆腐', cat: '豆' },
+  { kw: ['牛腱'],         name: '滷牛腱',     cat: '牛' },
+  { kw: ['牛肚'],         name: '滷牛肚',     cat: '牛' },
+];
+const CATEGORY_ORDER = ['雞', '鴨', '豬', '豆', '牛', '乾鍋'];
+
+/* 歸戶前的字串清洗：移除〔〕【】括號字元與「下架商品」字樣 */
+const cleanName = n => String(n).replace(/[〔〕【】]/g, '').replace(/下架商品/g, '');
+
+/* 關鍵字比對（整行含口味欄一起看），命中第一條就停；沒命中回傳 null */
+function canonMatch(raw) {
+  const n = cleanName(raw);
+  for (const r of CANON_RULES) {
+    if (r.kw.every(k => n.includes(k))) return r;
+  }
+  return null;
+}
+
+/* 未命中規則時的備用統一寫法（去空白、統一全半形、去結尾-原味） */
+const normalizeName = n => cleanName(n)
   .replace(/\s+/g, '')
   .replace(/-/g, '－')
-  .replace(/，/g, ',');
+  .replace(/，/g, ',')
+  .replace(/－?原味$/, '');
 
 /* 解析 1Shop 匯出的訂單 Excel */
 function parseOrderXlsx(buf) {
@@ -881,13 +936,10 @@ async function uploadOrders() {
    - 兩店同名商品的不同 SKU 也合併；庫存加總所有歸戶到同名的商品
    水位補貨法：建議補貨 = 本月底前要出的量 + 安全庫存 − 現有庫存 */
 const SAFETY_STOCK = 50; // 全品項統一安全庫存，之後可改為逐項設定
-/* 歸戶：統一寫法 → 口味別名對照 → 去掉結尾「－原味」（原味＝預設口味）
-   讓【預購…】前綴、-原味有無、空格、全半形差異全部併為同一品項 */
+/* 歸戶：關鍵字規則優先；沒命中則用備用統一寫法（保留原名可見，不默默消失） */
 const canonName = n => {
-  const b = normalizeName(n);
-  if (NAME_ALIASES[b]) return NAME_ALIASES[b];
-  const b2 = b.replace(/－?原味$/, '');
-  return NAME_ALIASES[b2] || b2;
+  const hit = canonMatch(n);
+  return hit ? hit.name : normalizeName(n);
 };
 function demandRows() {
   const byKey = {};
@@ -1121,6 +1173,80 @@ async function delTxn(id) {
 }
 
 /* =====================================================
+   彙總統計（貼上文字清單 → 歸戶加總 → LINE 格式）
+   ===================================================== */
+function runTally() {
+  const raw = document.getElementById('tallyInput').value;
+  const lines = raw.split(/[\n、]+/).map(s => s.trim()).filter(Boolean);
+  const totals = {};
+  const unmatched = [];
+  const warns = [];
+  let secSum = 0, secIdx = 1, grand = 0, sawItems = false;
+
+  for (const line of lines) {
+    /* 「共 N 個」＝一個部分的結尾，核對小計 */
+    const declared = line.match(/共\s*([0-9,]+)\s*個/);
+    if (declared) {
+      const n = parseInt(declared[1].replace(/,/g, ''), 10);
+      warns.push(n === secSum
+        ? `✅ 第 ${secIdx} 部分小計 ${secSum}，與標示一致`
+        : `❌ 第 ${secIdx} 部分小計算出 ${secSum}，但資料標示「共 ${n} 個」，請檢查！`);
+      secIdx++; secSum = 0; continue;
+    }
+    /* 商品行：最後一個 * 後面是數量；其他行（金額、標題）跳過 */
+    const qm = line.match(/\*\s*([0-9,]+)\s*$/);
+    if (!qm) continue;
+    let name = line.slice(0, line.lastIndexOf('*')).trim();
+    name = name.replace(/^[0-9]+(?:-[0-9]+)?\s*/, ''); /* 去掉開頭 SKU 代碼（不用它歸戶） */
+    if (isExcludedName(name)) continue; /* 行政品項（出貨區段等）不計 */
+    const qty = parseInt(qm[1].replace(/,/g, ''), 10);
+    const hit = canonMatch(name);
+    if (!hit) { unmatched.push(line); continue; }
+    totals[hit.name] = (totals[hit.name] || 0) + qty;
+    secSum += qty; grand += qty; sawItems = true;
+  }
+  if (secSum > 0) warns.push(`ℹ️ 最後一部分（第 ${secIdx} 部分）小計 ${secSum}，資料中沒有「共 N 個」可核對`);
+
+  const warnCard = document.getElementById('tallyWarnCard');
+  const warnBox = document.getElementById('tallyWarn');
+  const outCard = document.getElementById('tallyOutCard');
+  const outBox = document.getElementById('tallyOut');
+
+  if (!sawItems && !unmatched.length) { toast('沒有讀到任何商品行'); warnCard.style.display = 'none'; outCard.style.display = 'none'; return; }
+
+  let warnHtml = warns.map(w => `<div>${w}</div>`).join('');
+  if (unmatched.length) {
+    warnHtml += `<div style="color:var(--critical); font-weight:700; margin-top:8px">🛑 有 ${unmatched.length} 行無法歸類（已暫停輸出，請確認品名或請 Claude 加規則）：</div>`
+      + unmatched.map(u => `<div style="color:var(--critical)">・${u}</div>`).join('');
+  }
+  warnBox.innerHTML = warnHtml;
+  warnCard.style.display = 'block';
+
+  if (unmatched.length) { outCard.style.display = 'none'; return; }
+
+  /* LINE 輸出：依分類順序，各分類內依規則表順序 */
+  let out = '';
+  for (const cat of CATEGORY_ORDER) {
+    const names = CANON_RULES.filter(r => r.cat === cat && totals[r.name]).map(r => r.name);
+    const uniq = [...new Set(names)];
+    if (!uniq.length) continue;
+    out += cat + '：\n' + uniq.map(n => `${n}*${totals[n]}`).join('\n') + '\n';
+  }
+  out += `共 ${grand.toLocaleString()} 個`;
+  outBox.textContent = out;
+  outCard.style.display = 'block';
+}
+
+async function copyTally() {
+  try {
+    await navigator.clipboard.writeText(document.getElementById('tallyOut').textContent);
+    toast('已複製，可直接貼到 LINE');
+  } catch (e) {
+    toast('複製失敗，請手動長按選取');
+  }
+}
+
+/* =====================================================
    共用
    ===================================================== */
 let toastTimer;
@@ -1141,7 +1267,7 @@ function renderAll() {
   renderLog();
 }
 
-const APP_VER = 'v18';
+const APP_VER = 'v19';
 const td = new Date();
 document.getElementById('todayLabel').textContent =
   `${td.getFullYear()}/${td.getMonth() + 1}/${td.getDate()}・${APP_VER}`;
